@@ -1,0 +1,15 @@
+# PyInstaller — generated at build time, never commit
+build/
+dist/
+*.exe
+*.spec
+*.zip
+version_info.txt
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Runtime config
+*.json
