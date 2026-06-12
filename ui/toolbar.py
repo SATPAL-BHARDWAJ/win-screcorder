@@ -1,5 +1,6 @@
 import os
 import datetime
+import traceback
 import keyboard
 from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QLabel, QPushButton,
@@ -93,6 +94,10 @@ QToolTip {
 
 
 class Toolbar(QWidget):
+    # Signals used to marshal hotkey callbacks (background thread) to the Qt main thread
+    _sig_record = pyqtSignal()
+    _sig_pause  = pyqtSignal()
+
     def __init__(self, config: dict, save_config_fn, app_version: str = "0.0.0"):
         super().__init__()
         self.config = config
@@ -235,14 +240,18 @@ class Toolbar(QWidget):
     # ── global hotkeys ───────────────────────────────────────────────────────
 
     def _setup_hotkeys(self):
+        # Connect signals so hotkey callbacks (fired on keyboard's background thread)
+        # are safely marshalled to the Qt main thread before touching any Qt objects.
+        self._sig_record.connect(self._on_record)
+        self._sig_pause.connect(self._on_pause)
         try:
             keyboard.add_hotkey(
                 self.config.get("hotkey_record", "ctrl+alt+r"),
-                self._on_record, suppress=False
+                self._sig_record.emit, suppress=False
             )
             keyboard.add_hotkey(
                 self.config.get("hotkey_pause", "ctrl+alt+p"),
-                self._on_pause, suppress=False
+                self._sig_pause.emit, suppress=False
             )
         except Exception:
             pass  # hotkeys unavailable without admin on some systems
@@ -286,37 +295,89 @@ class Toolbar(QWidget):
     def _on_record(self):
         if self._recording:
             return
-        rect = self._resolve_capture_rect()
-        if not rect:
-            return
+        try:
+            rect = self._resolve_capture_rect()
+            if not rect:
+                return
 
-        self._capture_rect = rect
-        x, y, w, h = rect
-        # Ensure even dimensions for h264
-        w = w if w % 2 == 0 else w - 1
-        h = h if h % 2 == 0 else h - 1
-        self._capture_rect = (x, y, w, h)
+            self._capture_rect = rect
+            x, y, w, h = rect
+            w = w if w % 2 == 0 else w - 1
+            h = h if h % 2 == 0 else h - 1
+            self._capture_rect = (x, y, w, h)
 
-        fps = self.config.get("fps", 30)
-        output_path = self._make_output_path()
+            fps = self.config.get("fps", 30)
+            output_path = self._make_output_path()
 
-        self._encoder = Encoder(output_path, w, h, fps)
-        self._encoder.start()
+            # Verify ffmpeg is reachable before starting threads
+            from recorder.encoder import _find_ffmpeg
+            import shutil as _shutil
+            _ff = _find_ffmpeg()
+            if not (os.path.isfile(_ff) or _shutil.which(_ff)):
+                raise FileNotFoundError(
+                    f"ffmpeg not found at: {_ff}\n"
+                    f"Place ffmpeg.exe in the 'assets' folder next to main.py."
+                )
 
-        self._audio_thread = AudioCaptureThread(self._encoder.audio_queue)
-        self._audio_thread.start()
+            self._encoder = Encoder(output_path, w, h, fps)
+            self._encoder.start()
 
-        self._capture_thread = ScreenCaptureThread(
-            self._capture_rect, fps, self._encoder.frame_queue
-        )
-        self._capture_thread.start()
+            self._audio_thread = AudioCaptureThread(self._encoder.audio_queue)
+            self._audio_thread.start()
 
-        self._recording = True
-        self._paused = False
-        self._elapsed_secs = 0
-        self._timer.start()
-        self._update_button_states()
-        self._tray.showMessage("ScRecorder", "Recording started", QSystemTrayIcon.Information, 2000)
+            self._capture_thread = ScreenCaptureThread(
+                self._capture_rect, fps, self._encoder.frame_queue
+            )
+            self._capture_thread.start()
+
+            self._recording = True
+            self._paused = False
+            self._elapsed_secs = 0
+            self._timer.start()
+            self._update_button_states()
+            self._tray.showMessage("ScRecorder", "Recording started", QSystemTrayIcon.Information, 2000)
+
+        except Exception as exc:
+            tb_text = traceback.format_exc()
+            # Write to log file so it survives after the dialog is closed
+            try:
+                import datetime as _dt
+                log_dir = os.path.join(os.environ.get("APPDATA", "."), "ScRecorder")
+                os.makedirs(log_dir, exist_ok=True)
+                log_path = os.path.join(log_dir, "error.log")
+                with open(log_path, "a", encoding="utf-8") as _f:
+                    _f.write(f"\n--- {_dt.datetime.now().isoformat()} ---\n")
+                    _f.write(tb_text)
+            except Exception:
+                pass
+            import sys as _sys
+            if _sys.stderr is not None:
+                traceback.print_exc()
+            # Clean up any partially started components so state stays consistent
+            for thread in (self._capture_thread, self._audio_thread):
+                if thread is not None:
+                    try:
+                        thread.stop()
+                        thread.wait(1000)
+                    except Exception:
+                        pass
+            self._capture_thread = None
+            self._audio_thread = None
+            if self._encoder is not None:
+                try:
+                    self._encoder.stop()
+                except Exception:
+                    pass
+                self._encoder = None
+            self._recording = False
+            self._update_button_states()
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.critical(
+                self,
+                "ScRecorder — Recording Failed",
+                f"<b>Failed to start recording:</b><br><br>"
+                f"<pre style='font-size:11px'>{tb_text}</pre>",
+            )
 
     def _on_pause(self):
         if not self._recording:

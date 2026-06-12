@@ -1,10 +1,28 @@
 import sys
 import os
 import json
+import traceback
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import Qt, QTimer
 from ui.toolbar import Toolbar
 from version import __version__
+
+
+def _excepthook(exc_type, exc_value, exc_tb):
+    """Log unhandled exceptions without terminating the Qt process."""
+    try:
+        log_dir = os.path.join(os.environ.get("APPDATA", "."), "ScRecorder")
+        os.makedirs(log_dir, exist_ok=True)
+        import datetime
+        with open(os.path.join(log_dir, "error.log"), "a", encoding="utf-8") as f:
+            f.write(f"\n--- {datetime.datetime.now().isoformat()} [unhandled] ---\n")
+            traceback.print_exception(exc_type, exc_value, exc_tb, file=f)
+    except Exception:
+        pass
+    if sys.stderr is not None:
+        traceback.print_exception(exc_type, exc_value, exc_tb)
+
+sys.excepthook = _excepthook
 
 CONFIG_PATH = os.path.join(os.environ.get("APPDATA", "."), "ScRecorder", "config.json")
 

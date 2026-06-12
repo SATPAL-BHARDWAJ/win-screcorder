@@ -5,3 +5,4 @@ opencv-python>=4.5.0
 pywin32>=305
 keyboard>=0.13.5
 Pillow>=9.0.0
+pyinstaller

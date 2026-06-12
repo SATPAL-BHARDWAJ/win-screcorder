@@ -8,9 +8,10 @@ import shutil
 
 def _find_ffmpeg():
     """Locate ffmpeg: bundled next to exe, assets folder, or system PATH."""
-    # PyInstaller bundle: look next to the executable
     if getattr(sys, "frozen", False):
-        base = os.path.dirname(sys.executable)
+        # --onefile: PyInstaller extracts bundle to sys._MEIPASS at runtime
+        # --onedir: files sit next to sys.executable
+        base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
     else:
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
